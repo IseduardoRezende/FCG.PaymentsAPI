@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fcg-payments-api
+  labels:
+    app: fcg-payments-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fcg-payments-api
+  template:
+    metadata:
+      labels:
+        app: fcg-payments-api
+    spec:
+      containers:
+        - name: fcg-payments-api
+          image: fcg-payments-api:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: fcg-payments-config
+            - secretRef:
+                name: fcg-payments-secret
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: 8080
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi

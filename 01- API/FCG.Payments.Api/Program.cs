@@ -1,0 +1,142 @@
+using System.Text;
+using System.Text.Json.Serialization;
+using Asp.Versioning;
+using FCG.Payments.Api.Converters;
+using FCG.Payments.Api.Handlers;
+using FCG.Payments.Api.Security;
+using FCG.Payments.Api.Swagger;
+using FCG.Payments.Application.Abstractions;
+using FCG.Payments.Infrastructure;
+using FCG.Payments.Infrastructure.DbContexts;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
+using Microsoft.IdentityModel.Tokens;
+using Microsoft.OpenApi;
+using Serilog;
+using Serilog.Events;
+using Swashbuckle.AspNetCore.SwaggerGen;
+
+try
+{
+    Log.Logger = new LoggerConfiguration()
+        .WriteTo.Console()
+        .CreateBootstrapLogger();
+
+    var builder = WebApplication.CreateBuilder(args);
+
+    builder.Host.UseSerilog((context, services, configuration) =>
+        configuration
+            .ReadFrom.Configuration(context.Configuration)
+            .ReadFrom.Services(services)
+            .Enrich.FromLogContext());
+
+    builder.Services.AddControllers()
+        .AddJsonOptions(c => c.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter()))
+        .AddJsonOptions(c => c.JsonSerializerOptions.Converters.Add(new TrimmingJsonConverter()));
+
+    builder.Services.AddHttpContextAccessor();
+    builder.Services.AddScoped<ICurrentUser, HttpCurrentUser>();
+    builder.Services.AddDependencies(builder.Configuration);
+    builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
+    builder.Services.AddProblemDetails();
+
+    builder.Services.AddApiVersioning(options =>
+    {
+        options.ReportApiVersions = true;
+        options.ApiVersionReader = new UrlSegmentApiVersionReader();
+    })
+    .AddMvc()
+    .AddApiExplorer(options =>
+    {
+        options.GroupNameFormat = "'v'VVV";
+        options.SubstituteApiVersionInUrl = true;
+    });
+
+    builder.Services.AddTransient<IConfigureOptions<SwaggerGenOptions>, ConfigureSwaggerOptions>();
+    builder.Services.AddSwaggerGen(options =>
+    {
+        options.EnableAnnotations();
+        options.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
+        {
+            Description = "JWT Authorization header using the Bearer scheme. Example: \"Authorization: {token}\"",
+            Name = "Authorization",
+            In = ParameterLocation.Header,
+            Type = SecuritySchemeType.Http,
+            Scheme = "Bearer"
+        });
+        options.AddSecurityRequirement(document => new OpenApiSecurityRequirement
+        {
+            [new OpenApiSecuritySchemeReference("Bearer", document)] = []
+        });
+    });
+
+    var tokenSettings = builder.Configuration.GetSection(nameof(TokenSettings)).Get<TokenSettings>()
+        ?? throw new InvalidOperationException("TokenSettings section is not configured.");
+
+    builder.Services.AddAuthentication(options =>
+    {
+        options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
+        options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
+    })
+    .AddJwtBearer(options =>
+    {
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer = true,
+            ValidateAudience = true,
+            ValidateLifetime = true,
+            ValidateIssuerSigningKey = true,
+            ValidIssuer = tokenSettings.Issuer,
+            ValidAudience = tokenSettings.Audience,
+            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(tokenSettings.Key)),
+            RoleClaimType = System.Security.Claims.ClaimTypes.Role
+        };
+    });
+
+    builder.Services.AddAuthorization();
+
+    builder.Services.AddCors(options =>
+    {
+        options.AddDefaultPolicy(policy => policy.AllowAnyHeader().AllowAnyMethod().AllowAnyOrigin());
+    });
+
+    var app = builder.Build();
+
+    using (var scope = app.Services.CreateScope())
+    {
+        var dbContext = scope.ServiceProvider.GetRequiredService<PaymentsDbContext>();
+        await dbContext.Database.MigrateAsync();
+    }
+
+    app.UseExceptionHandler();
+    app.UseSerilogRequestLogging(options => options.GetLevel = (context, _, exception) =>
+        exception is not null || context.Response.StatusCode >= StatusCodes.Status500InternalServerError ? LogEventLevel.Error
+        : context.Request.Path.StartsWithSegments("/health") ? LogEventLevel.Verbose
+        : LogEventLevel.Information);
+    app.UseCors();
+    app.UseAuthentication();
+    app.UseAuthorization();
+    app.UseSwagger();
+    app.UseSwaggerUI(options =>
+    {
+        options.SwaggerEndpoint("/swagger/v1/swagger.json", "FCG Payments API v1");
+    });
+
+    app.MapHealthChecks("/health");
+    app.MapHealthChecks("/health/live", new HealthCheckOptions { Predicate = _ => false });
+    app.MapControllers();
+    app.Run();
+}
+catch (Exception ex) when (ex is not HostAbortedException)
+{
+    Log.Fatal(ex, "Startup Error");
+    throw;
+}
+finally
+{
+    await Log.CloseAndFlushAsync();
+}
+
+public partial class Program;

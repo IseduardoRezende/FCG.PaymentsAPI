@@ -1,0 +1,29 @@
+name: .NET
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main", "develop" ]
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: 10.0.x
+    - name: Restore dependencies
+      run: dotnet restore FCG.Payments.slnx
+    - name: Build
+      run: dotnet build --no-restore FCG.Payments.slnx
+    - name: Unit tests
+      run: dotnet test --no-build --project "05- Tests/FCG.Payments.UnitTests/FCG.Payments.UnitTests.csproj"
+    - name: Integration tests (Testcontainers)
+      run: dotnet test --no-build --project "05- Tests/FCG.Payments.IntegrationTests/FCG.Payments.IntegrationTests.csproj"
+    - name: Docker build
+      run: docker build -t fcg-payments-api:ci .
